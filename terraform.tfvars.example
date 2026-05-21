@@ -1,0 +1,5 @@
+aws_region                   = "us-east-1"
+gitlab_instance_type         = "t3.large"
+ssh_public_key               = "ssh-rsa AAAAB3... your-key-here"
+gitlab_token_name            = "pipeline-token"
+gitlab_personal_access_token = "glpat-xxxxxxxxxxxxxxxxxxxx"
