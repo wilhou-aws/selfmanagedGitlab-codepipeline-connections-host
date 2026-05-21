@@ -310,7 +310,7 @@ resource "tls_cert_request" "gitlab" {
   private_key_pem = tls_private_key.gitlab.private_key_pem
 
   subject {
-    common_name  = "gitlab.internal"
+    common_name  = var.gitlab_private_ip
     organization = "Internal"
   }
 
@@ -397,14 +397,17 @@ resource "aws_security_group" "codestar_sg" {
 
 resource "aws_codestarconnections_host" "gitlab_host" {
   name              = "gitlab-self-managed-host"
-  provider_endpoint = "https://${aws_instance.gitlab.private_ip}"
+  provider_endpoint = "https://${var.gitlab_private_ip}"
   provider_type     = "GitLabSelfManaged"
 
   vpc_configuration {
     vpc_id             = aws_vpc.pipeline_vpc.id
     subnet_ids         = [aws_subnet.pipeline_private_subnet.id]
     security_group_ids = [aws_security_group.codestar_sg.id]
-    tls_certificate    = aws_acmpca_certificate.gitlab_ca_cert.certificate
+    tls_certificate    = join("", [
+      aws_acmpca_certificate.gitlab_tls.certificate,
+      aws_acmpca_certificate.gitlab_ca_cert.certificate
+    ])
   }
 }
 
