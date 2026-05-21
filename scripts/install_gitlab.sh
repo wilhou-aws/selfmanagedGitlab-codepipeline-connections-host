@@ -14,27 +14,28 @@ apt-get upgrade -y
 apt-get install -y curl openssh-server ca-certificates tzdata perl
 
 # ==============================================================================
-# Install TLS certificate issued by Private CA
+# Install TLS certificate signed by internal CA
 # ==============================================================================
 
 mkdir -p /etc/gitlab/ssl
 
-cat > /etc/gitlab/ssl/gitlab.crt <<'CERT'
+cat > /etc/gitlab/ssl/${gitlab_domain}.crt <<'CERT'
 ${tls_certificate}
+${ca_certificate}
 CERT
 
-cat > /etc/gitlab/ssl/gitlab.key <<'KEY'
+cat > /etc/gitlab/ssl/${gitlab_domain}.key <<'KEY'
 ${tls_private_key}
 KEY
 
-cat > /usr/local/share/ca-certificates/gitlab-ca.crt <<'CA'
+cat > /usr/local/share/ca-certificates/gitlab-internal-ca.crt <<'CA'
 ${ca_certificate}
 CA
 
-chmod 600 /etc/gitlab/ssl/gitlab.key
-chmod 644 /etc/gitlab/ssl/gitlab.crt
+chmod 600 /etc/gitlab/ssl/${gitlab_domain}.key
+chmod 644 /etc/gitlab/ssl/${gitlab_domain}.crt
 
-# Trust the private CA on this instance
+# Trust the internal CA on this instance
 update-ca-certificates
 
 # ==============================================================================
@@ -45,11 +46,11 @@ curl -sS https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/scrip
 
 EXTERNAL_URL="https://${gitlab_domain}" apt-get install -y gitlab-ce
 
-# Configure GitLab to use our certificate
+# Configure GitLab to use our certificate (GitLab auto-detects certs in /etc/gitlab/ssl/<domain>.crt)
 cat >> /etc/gitlab/gitlab.rb <<'GITLABCFG'
-nginx['ssl_certificate'] = "/etc/gitlab/ssl/gitlab.crt"
-nginx['ssl_certificate_key'] = "/etc/gitlab/ssl/gitlab.key"
 letsencrypt['enable'] = false
+nginx['ssl_certificate'] = "/etc/gitlab/ssl/${gitlab_domain}.crt"
+nginx['ssl_certificate_key'] = "/etc/gitlab/ssl/${gitlab_domain}.key"
 GITLABCFG
 
 # Reconfigure with the proper TLS cert

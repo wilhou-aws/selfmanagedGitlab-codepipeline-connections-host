@@ -240,72 +240,39 @@ resource "aws_security_group" "gitlab_sg" {
 }
 
 # ==============================================================================
-# Private CA & TLS Certificate for GitLab
+# TLS Certificates for GitLab (using tls provider - no ACM PCA needed)
 # ==============================================================================
 
-resource "aws_acmpca_certificate_authority" "gitlab_ca" {
-  type = "ROOT"
-
-  certificate_authority_configuration {
-    key_algorithm     = "RSA_2048"
-    signing_algorithm = "SHA256WITHRSA"
-
-    subject {
-      common_name  = "GitLab Internal CA"
-      organization = "Internal"
-    }
-  }
-
-  permanent_deletion_time_in_days = 7
-
-  tags = {
-    Name = "gitlab-private-ca"
-  }
+# Self-signed CA
+resource "tls_private_key" "ca" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
 }
 
-# Self-sign the root CA certificate
-resource "aws_acmpca_certificate" "gitlab_ca_cert" {
-  certificate_authority_arn   = aws_acmpca_certificate_authority.gitlab_ca.arn
-  certificate_signing_request = aws_acmpca_certificate_authority.gitlab_ca.certificate_signing_request
-  signing_algorithm           = "SHA256WITHRSA"
+resource "tls_self_signed_cert" "ca" {
+  private_key_pem = tls_private_key.ca.private_key_pem
 
-  template_arn = "arn:aws:acm-pca:::template/RootCACertificate/V1"
-
-  validity {
-    type  = "YEARS"
-    value = 10
-  }
-}
-
-# Activate the CA by installing its own certificate
-resource "aws_acmpca_certificate_authority_certificate" "gitlab_ca_cert" {
-  certificate_authority_arn = aws_acmpca_certificate_authority.gitlab_ca.arn
-  certificate              = aws_acmpca_certificate.gitlab_ca_cert.certificate
-  certificate_chain        = aws_acmpca_certificate.gitlab_ca_cert.certificate_chain
-}
-
-# Issue a TLS certificate for GitLab signed by the private CA
-resource "aws_acmpca_certificate" "gitlab_tls" {
-  certificate_authority_arn   = aws_acmpca_certificate_authority.gitlab_ca.arn
-  certificate_signing_request = tls_cert_request.gitlab.cert_request_pem
-  signing_algorithm           = "SHA256WITHRSA"
-
-  template_arn = "arn:aws:acm-pca:::template/EndEntityCertificate/V1"
-
-  validity {
-    type  = "YEARS"
-    value = 1
+  subject {
+    common_name  = "GitLab Internal CA"
+    organization = "Internal"
   }
 
-  depends_on = [aws_acmpca_certificate_authority_certificate.gitlab_ca_cert]
+  validity_period_hours = 87600 # 10 years
+  is_ca_certificate     = true
+
+  allowed_uses = [
+    "cert_signing",
+    "crl_signing",
+  ]
 }
 
-# Generate a private key and CSR for GitLab TLS
+# GitLab server private key
 resource "tls_private_key" "gitlab" {
   algorithm = "RSA"
   rsa_bits  = 2048
 }
 
+# GitLab server CSR
 resource "tls_cert_request" "gitlab" {
   private_key_pem = tls_private_key.gitlab.private_key_pem
 
@@ -314,9 +281,23 @@ resource "tls_cert_request" "gitlab" {
     organization = "Internal"
   }
 
-  # SAN includes the static private IP assigned to GitLab
   ip_addresses = [var.gitlab_private_ip]
   dns_names    = ["gitlab.internal", "gitlab.local"]
+}
+
+# GitLab server certificate signed by our CA
+resource "tls_locally_signed_cert" "gitlab" {
+  cert_request_pem   = tls_cert_request.gitlab.cert_request_pem
+  ca_private_key_pem = tls_private_key.ca.private_key_pem
+  ca_cert_pem        = tls_self_signed_cert.ca.cert_pem
+
+  validity_period_hours = 8760 # 1 year
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
 }
 
 # ==============================================================================
@@ -354,10 +335,10 @@ resource "aws_instance" "gitlab" {
   user_data = templatefile("${path.module}/scripts/install_gitlab.sh", {
     gitlab_token_name  = var.gitlab_token_name
     gitlab_token_value = var.gitlab_personal_access_token
-    gitlab_domain      = "gitlab.internal"
-    tls_certificate    = aws_acmpca_certificate.gitlab_tls.certificate
+    gitlab_domain      = var.gitlab_private_ip
+    tls_certificate    = tls_locally_signed_cert.gitlab.cert_pem
     tls_private_key    = tls_private_key.gitlab.private_key_pem
-    ca_certificate     = aws_acmpca_certificate.gitlab_ca_cert.certificate
+    ca_certificate     = tls_self_signed_cert.ca.cert_pem
   })
 
   tags = {
@@ -404,10 +385,7 @@ resource "aws_codestarconnections_host" "gitlab_host" {
     vpc_id             = aws_vpc.pipeline_vpc.id
     subnet_ids         = [aws_subnet.pipeline_private_subnet.id]
     security_group_ids = [aws_security_group.codestar_sg.id]
-    tls_certificate    = join("", [
-      aws_acmpca_certificate.gitlab_tls.certificate,
-      aws_acmpca_certificate.gitlab_ca_cert.certificate
-    ])
+    tls_certificate    = tls_self_signed_cert.ca.cert_pem
   }
 }
 

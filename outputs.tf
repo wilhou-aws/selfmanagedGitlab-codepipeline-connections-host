@@ -38,7 +38,8 @@ output "codestar_connection_status" {
   value       = aws_codestarconnections_connection.gitlab_connection.connection_status
 }
 
-output "private_ca_arn" {
-  description = "ARN of the Private CA used for GitLab TLS"
-  value       = aws_acmpca_certificate_authority.gitlab_ca.arn
+output "private_ca_certificate" {
+  description = "CA certificate PEM (use this if you need to trust the GitLab cert elsewhere)"
+  value       = tls_self_signed_cert.ca.cert_pem
+  sensitive   = true
 }
