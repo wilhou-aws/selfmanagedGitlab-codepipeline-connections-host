@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
@@ -236,6 +240,86 @@ resource "aws_security_group" "gitlab_sg" {
 }
 
 # ==============================================================================
+# Private CA & TLS Certificate for GitLab
+# ==============================================================================
+
+resource "aws_acmpca_certificate_authority" "gitlab_ca" {
+  type = "ROOT"
+
+  certificate_authority_configuration {
+    key_algorithm     = "RSA_2048"
+    signing_algorithm = "SHA256WITHRSA"
+
+    subject {
+      common_name  = "GitLab Internal CA"
+      organization = "Internal"
+    }
+  }
+
+  permanent_deletion_time_in_days = 7
+
+  tags = {
+    Name = "gitlab-private-ca"
+  }
+}
+
+# Self-sign the root CA certificate
+resource "aws_acmpca_certificate" "gitlab_ca_cert" {
+  certificate_authority_arn   = aws_acmpca_certificate_authority.gitlab_ca.arn
+  certificate_signing_request = aws_acmpca_certificate_authority.gitlab_ca.certificate_signing_request
+  signing_algorithm           = "SHA256WITHRSA"
+
+  template_arn = "arn:aws:acm-pca:::template/RootCACertificate/V1"
+
+  validity {
+    type  = "YEARS"
+    value = 10
+  }
+}
+
+# Activate the CA by installing its own certificate
+resource "aws_acmpca_certificate_authority_certificate" "gitlab_ca_cert" {
+  certificate_authority_arn = aws_acmpca_certificate_authority.gitlab_ca.arn
+  certificate              = aws_acmpca_certificate.gitlab_ca_cert.certificate
+  certificate_chain        = aws_acmpca_certificate.gitlab_ca_cert.certificate_chain
+}
+
+# Issue a TLS certificate for GitLab signed by the private CA
+resource "aws_acmpca_certificate" "gitlab_tls" {
+  certificate_authority_arn   = aws_acmpca_certificate_authority.gitlab_ca.arn
+  certificate_signing_request = tls_cert_request.gitlab.cert_request_pem
+  signing_algorithm           = "SHA256WITHRSA"
+
+  template_arn = "arn:aws:acm-pca:::template/EndEntityCertificate/V1"
+
+  validity {
+    type  = "YEARS"
+    value = 1
+  }
+
+  depends_on = [aws_acmpca_certificate_authority_certificate.gitlab_ca_cert]
+}
+
+# Generate a private key and CSR for GitLab TLS
+resource "tls_private_key" "gitlab" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_cert_request" "gitlab" {
+  private_key_pem = tls_private_key.gitlab.private_key_pem
+
+  subject {
+    common_name  = "gitlab.internal"
+    organization = "Internal"
+  }
+
+  # SAN includes the static private IP assigned to GitLab
+  ip_addresses = [var.gitlab_private_ip]
+  dns_names    = ["gitlab.internal", "gitlab.local"]
+}
+
+# ==============================================================================
 # EC2 Instance for GitLab
 # ==============================================================================
 
@@ -259,6 +343,7 @@ resource "aws_instance" "gitlab" {
   instance_type          = var.gitlab_instance_type
   key_name               = "wilhou"
   subnet_id              = aws_subnet.gitlab_private_subnet.id
+  private_ip             = var.gitlab_private_ip
   vpc_security_group_ids = [aws_security_group.gitlab_sg.id]
 
   root_block_device {
@@ -269,7 +354,10 @@ resource "aws_instance" "gitlab" {
   user_data = templatefile("${path.module}/scripts/install_gitlab.sh", {
     gitlab_token_name  = var.gitlab_token_name
     gitlab_token_value = var.gitlab_personal_access_token
-    gitlab_domain      = "gitlab.local"
+    gitlab_domain      = "gitlab.internal"
+    tls_certificate    = aws_acmpca_certificate.gitlab_tls.certificate
+    tls_private_key    = tls_private_key.gitlab.private_key_pem
+    ca_certificate     = aws_acmpca_certificate.gitlab_ca_cert.certificate
   })
 
   tags = {
@@ -316,6 +404,7 @@ resource "aws_codestarconnections_host" "gitlab_host" {
     vpc_id             = aws_vpc.pipeline_vpc.id
     subnet_ids         = [aws_subnet.pipeline_private_subnet.id]
     security_group_ids = [aws_security_group.codestar_sg.id]
+    tls_certificate    = aws_acmpca_certificate.gitlab_ca_cert.certificate
   }
 }
 
