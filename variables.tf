@@ -10,11 +10,6 @@ variable "gitlab_instance_type" {
   default     = "t3.large"
 }
 
-variable "ssh_public_key" {
-  description = "SSH public key for GitLab EC2 instance access"
-  type        = string
-}
-
 
 
 variable "gitlab_token_name" {

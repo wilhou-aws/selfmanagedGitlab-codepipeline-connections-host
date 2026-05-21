@@ -254,15 +254,10 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-resource "aws_key_pair" "gitlab_key" {
-  key_name   = "gitlab-key"
-  public_key = var.ssh_public_key
-}
-
 resource "aws_instance" "gitlab" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.gitlab_instance_type
-  key_name               = aws_key_pair.gitlab_key.key_name
+  key_name               = "wilhou"
   subnet_id              = aws_subnet.gitlab_private_subnet.id
   vpc_security_group_ids = [aws_security_group.gitlab_sg.id]
 
